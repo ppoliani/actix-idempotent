@@ -1,0 +1,17 @@
+[package]
+name = "axum-idempotent"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = ["redis-store"]
+redis-store = ["dep:fred"]
+
+[dependencies]
+axum = { version = "0.8.1" }
+fred = { version = "10.0.1", optional = true }
+tower-service = "0.3.3"
+tower-layer = "0.3.3"
+serde = { version = "1.0.217", features = ["derive"] }
+sha2 = "0.11.0-pre.4"
+thiserror = "2.0.11"
