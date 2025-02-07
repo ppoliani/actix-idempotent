@@ -1,7 +1,17 @@
 [package]
 name = "axum-idempotent"
+description = "A middleware for tower sessions"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.75.0"
+authors = ["Jimmie Lovell <jimmieomlovell@gmail.com>"]
+license = "MIT"
+homepage = "https://github.com/jimmielovell/axum-idempotent"
+keywords = ["idempotency", "axum"]
+categories = ["network-programming", "web-programming"]
+repository = "https://github.com/jimmielovell/axum-idempotent"
+documentation = "https://docs.rs/axum-idempotent"
+readme = "README.md"
 
 [dependencies]
 axum = { version = "0.8.1" }
