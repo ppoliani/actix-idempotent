@@ -1,8 +1,9 @@
 #[cfg(test)]
 mod tests {
     use axum::body::to_bytes;
+    use axum::http::HeaderName;
     use axum::{body::Body, extract::Request, routing::get, Router};
-    use axum_idempotent::IdempotentLayer;
+    use axum_idempotent::{IdempotentLayer, IdempotentOptions};
     use fred::clients::Client;
     use fred::prelude::ClientLike;
     use ruts::store::redis::RedisStore;
@@ -31,15 +32,12 @@ mod tests {
         let store = Arc::new(setup_redis().await);
 
         // Configure session options
-        let cookie_options = CookieOptions::build()
-            .name("session")
-            .max_age(1 * 3)
-            .path("/");
-
-        // Create session layer
+        let cookie_options = CookieOptions::build().name("session").max_age(10).path("/");
         let session_layer = SessionLayer::new(store.clone()).with_cookie_options(cookie_options);
 
-        let idempotent_layer = IdempotentLayer::<RedisStore<Client>>::new(3);
+        let idempotent_options =
+            IdempotentOptions::default().expire_after(3);
+        let idempotent_layer = IdempotentLayer::<RedisStore<Client>>::new(idempotent_options);
 
         Router::new()
             .route("/test", get(increment_counter))

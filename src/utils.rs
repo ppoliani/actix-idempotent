@@ -1,3 +1,4 @@
+use crate::config::IdempotentOptions;
 use axum::body::{to_bytes, Body};
 use axum::extract::Request;
 use axum::http::{HeaderMap, HeaderName, StatusCode};
@@ -5,7 +6,7 @@ use axum::response::Response;
 use std::error::Error;
 use std::str::FromStr;
 
-pub(crate) async fn hash_request(req: Request) -> (Request, String) {
+pub(crate) async fn hash_request(req: Request, options: &IdempotentOptions) -> (Request, String) {
     let mut bytes = Vec::new();
 
     bytes.extend_from_slice(req.method().as_str().as_bytes());
@@ -15,6 +16,34 @@ pub(crate) async fn hash_request(req: Request) -> (Request, String) {
     bytes.push(0);
     bytes.extend_from_slice(req.uri().path().as_bytes());
     bytes.push(0);
+
+    if !options.ignore_all_headers {
+        // Collect and sort headers for consistent ordering
+        let mut headers: Vec<_> = req
+            .headers()
+            .iter()
+            .filter(|(name, value)| {
+                if options.ignored_headers.contains(*name) {
+                    return false;
+                }
+                if let Some(ignored_value) = options.ignored_header_values.get(name.to_owned()) {
+                    return value != ignored_value;
+                }
+                true
+            })
+            .collect();
+
+        // Sort headers by name for consistency
+        headers.sort_by(|(a_name, _), (b_name, _)| a_name.as_str().cmp(b_name.as_str()));
+
+        // Add headers to hash
+        for (name, value) in headers {
+            bytes.extend_from_slice(name.as_str().as_bytes());
+            bytes.push(0);
+            bytes.extend_from_slice(value.as_bytes());
+            bytes.push(0);
+        }
+    }
 
     let (parts, body) = req.into_parts();
     let body_bytes = to_bytes(body, usize::MAX).await.unwrap();
@@ -110,6 +139,7 @@ fn parse_headers(header_bytes: &[u8]) -> Result<HeaderMap, Box<dyn Error + Send 
 mod tests {
     use super::*;
     use axum::http::{Method, StatusCode};
+    use std::default::Default;
 
     #[tokio::test]
     async fn test_hash_request() {
@@ -120,7 +150,7 @@ mod tests {
             .body(Body::from("test body"))
             .unwrap();
 
-        let (new_req, hash) = hash_request(req).await;
+        let (new_req, hash) = hash_request(req, &IdempotentOptions::default()).await;
 
         // Verify the new request matches original
         assert_eq!(new_req.method(), Method::POST);
@@ -137,7 +167,7 @@ mod tests {
             .body(Body::from("test body"))
             .unwrap();
 
-        let (_, hash2) = hash_request(req2).await;
+        let (_, hash2) = hash_request(req2, &IdempotentOptions::default()).await;
         assert_eq!(
             hash, hash2,
             "Hash should be deterministic for identical requests"
@@ -150,7 +180,7 @@ mod tests {
             .body(Body::from("different body"))
             .unwrap();
 
-        let (_, hash3) = hash_request(req3).await;
+        let (_, hash3) = hash_request(req3, &IdempotentOptions::default()).await;
         assert_ne!(hash, hash3, "Different body should produce different hash");
     }
 

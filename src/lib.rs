@@ -12,20 +12,24 @@ use tower_layer::Layer;
 use tower_service::Service;
 
 mod utils;
+
+mod config;
+pub use crate::config::IdempotentOptions;
+
 use crate::utils::{bytes_to_response, hash_request, response_to_bytes};
 
 #[derive(Clone, Debug)]
 pub struct IdempotentService<S, T> {
     inner: S,
-    expire_after_seconds: i64,
+    config: IdempotentOptions,
     phantom: PhantomData<T>,
 }
 
 impl<S, T> IdempotentService<S, T> {
-    pub const fn new(inner: S, expire_after_seconds: i64) -> Self {
+    pub const fn new(inner: S, config: IdempotentOptions) -> Self {
         IdempotentService::<S, T> {
             inner,
-            expire_after_seconds,
+            config,
             phantom: PhantomData,
         }
     }
@@ -47,10 +51,9 @@ where
     }
 
     fn call(&mut self, mut req: Request) -> Self::Future {
-        let expire_after_seconds = self.expire_after_seconds;
-
         let clone = self.inner.clone();
         let mut inner = std::mem::replace(&mut self.inner, clone);
+        let config = self.config.clone();
 
         Box::pin(async move {
             // let session  = req.extensions().get::<Session>().cloned();
@@ -70,7 +73,7 @@ where
                 })
                 .unwrap();
 
-            let (req, hash) = hash_request(req).await;
+            let (req, hash) = hash_request(req, &config).await;
 
             let cached_res = check_cached_response(&hash, &session).await;
             if let Err(err) = cached_res {
@@ -86,7 +89,7 @@ where
             let (res, response_bytes) = response_to_bytes(res).await;
 
             if let Err(err) = session
-                .update(&hash, &response_bytes, Some(expire_after_seconds))
+                .update(&hash, &response_bytes, Some(config.expire_after_seconds))
                 .await
             {
                 tracing::error!("Failed to save response to the session store: {:?}", err);
@@ -99,14 +102,14 @@ where
 
 #[derive(Clone, Debug)]
 pub struct IdempotentLayer<T> {
-    expire_after_seconds: i64,
+    config: IdempotentOptions,
     phantom_data: PhantomData<T>,
 }
 
 impl<T> IdempotentLayer<T> {
-    pub const fn new(expire_after_seconds: i64) -> Self {
+    pub const fn new(config: IdempotentOptions) -> Self {
         IdempotentLayer {
-            expire_after_seconds,
+            config,
             phantom_data: PhantomData,
         }
     }
@@ -116,7 +119,7 @@ impl<S, T> Layer<S> for IdempotentLayer<T> {
     type Service = IdempotentService<S, T>;
 
     fn layer(&self, service: S) -> Self::Service {
-        IdempotentService::new(service, self.expire_after_seconds)
+        IdempotentService::new(service, self.config.clone())
     }
 }
 
