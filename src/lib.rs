@@ -44,6 +44,9 @@
 //!             .max_age(3600)
 //!             .path("/")))
 //!     .layer(CookieManagerLayer::new());
+//!
+//! # let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+//! # axum::serve(listener, app).await.unwrap();
 //! # }
 //! #
 //! # async fn process_payment() -> &'static str {
@@ -125,34 +128,25 @@ where
         let config = self.config.clone();
 
         Box::pin(async move {
-            // let session  = req.extensions().get::<Session>().cloned();
-            let session = req
-                .extract_parts::<Session<T>>()
-                .await
-                .map_err(|err| {
-                    tracing::error!(
-                        "Session layer not found in the request extensions: {:?}",
-                        err
-                    );
-                    // (
-                    //     StatusCode::INTERNAL_SERVER_ERROR,
-                    //     "Session not found in the request",
-                    // )
-                    panic!("Session layer not found in the request extensions")
-                })
-                .unwrap();
+            let session = match req.extract_parts::<Session<T>>().await {
+                Ok(session) => session,
+                Err(err) => {
+                    tracing::error!("Failed to extract Session from request: {:?}", err);
+                    // Forward the request to the inner service without idempotency
+                    return inner.call(req).await;
+                }
+            };
 
             let (req, hash) = hash_request(req, &config).await;
 
-            let cached_res = check_cached_response(&hash, &session).await;
-            if let Err(err) = cached_res {
-                tracing::error!(
-                    "Failed to check cached response from the session store: {:?}",
-                    err
-                );
-            } else if let Ok(Some(res)) = cached_res {
-                return Ok(res);
-            };
+            match check_cached_response(&hash, &session).await {
+                Ok(Some(res)) => return Ok(res),
+                Ok(None) => {}  // No cached response, continue
+                Err(err) => {
+                    tracing::error!("Failed to check cached response: {:?}", err);
+                    // Continue without cache
+                }
+            }
 
             let res = inner.call(req).await?;
             let (res, response_bytes) = response_to_bytes(res).await;
@@ -161,7 +155,8 @@ where
                 .update(&hash, &response_bytes, Some(config.expire_after_seconds))
                 .await
             {
-                tracing::error!("Failed to save response to the session store: {:?}", err);
+                tracing::error!("Failed to cache response: {:?}", err);
+                // Continue without caching
             }
 
             Ok(res)

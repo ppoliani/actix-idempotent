@@ -1,7 +1,7 @@
 [package]
 name = "axum-idempotent"
-description = "A middleware for tower sessions"
-version = "0.1.0"
+description = "A middleware for handling idempotent requests in axum web applications."
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.75.0"
 authors = ["Jimmie Lovell <jimmieomlovell@gmail.com>"]
