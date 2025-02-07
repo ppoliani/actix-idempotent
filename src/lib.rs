@@ -18,6 +18,7 @@ pub use crate::config::IdempotentOptions;
 
 use crate::utils::{bytes_to_response, hash_request, response_to_bytes};
 
+/// Service that handles idempotent request processing.
 #[derive(Clone, Debug)]
 pub struct IdempotentService<S, T> {
     inner: S,
@@ -100,6 +101,42 @@ where
     }
 }
 
+/// Layer to apply [`IdempotentService`] middleware in `axum`.
+///
+/// This layer caches responses in a session store and returns the cached response
+/// for identical requests within the configured expiration time.
+///
+/// # Example
+/// ```no_run
+/// # use std::sync::Arc;
+/// # use axum::Router;
+/// # use axum::routing::get;
+/// # use fred::clients::Client;
+/// # use fred::interfaces::ClientLike;
+/// # use ruts::{CookieOptions, SessionLayer};
+/// # use axum_idempotent::{IdempotentLayer, IdempotentOptions};
+/// # use ruts::store::redis::RedisStore;
+/// # use tower_cookies::CookieManagerLayer;
+///
+/// # #[tokio::main]
+/// # async fn main() {
+/// # let client = Client::default();
+/// # client.init().await.unwrap();
+/// # let store = Arc::new(RedisStore::new(Arc::new(client)));
+///
+/// let idempotent_options = IdempotentOptions::default().expire_after(3);
+/// let idempotent_layer = IdempotentLayer::<RedisStore<Client>>::new(idempotent_options);
+///
+/// let app = Router::new()
+///     .route("/test", get(|| async { "Hello, World!"}))
+///     .layer(idempotent_layer)
+///     .layer(SessionLayer::new(store.clone())
+///         .with_cookie_options(CookieOptions::build().name("session").max_age(10).path("/")))
+///     .layer(CookieManagerLayer::new());
+/// # let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+/// # axum::serve(listener, app).await.unwrap();
+/// # }
+/// ```
 #[derive(Clone, Debug)]
 pub struct IdempotentLayer<T> {
     config: IdempotentOptions,
