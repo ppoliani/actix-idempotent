@@ -2,23 +2,26 @@ use axum::body::{to_bytes, Body};
 use axum::extract::Request;
 use axum::http::{HeaderMap, HeaderName, StatusCode};
 use axum::response::Response;
-use sha2::{Digest, Sha384};
 use std::error::Error;
 use std::str::FromStr;
 
 pub(crate) async fn hash_request(req: Request) -> (Request, String) {
-    let mut hasher = Sha384::new();
+    let mut bytes = Vec::new();
 
-    hasher = hasher.chain_update(req.method().as_str().as_bytes());
-    hasher = hasher.chain_update(req.uri().path().as_bytes());
+    bytes.extend_from_slice(req.method().as_str().as_bytes());
+    // To prevent collisions such as Method: "POST", Path: "T", Body: "EST"
+    // and Method: "POS", Path: "T", Body: "TEST" which would both produce
+    // the same byte sequence: "POSTEST", use null byte as separator
+    bytes.push(0);
+    bytes.extend_from_slice(req.uri().path().as_bytes());
+    bytes.push(0);
 
     let (parts, body) = req.into_parts();
-    // We do not care about the maximum size.
-    let bytes = to_bytes(body, usize::MAX).await.unwrap();
-    hasher = hasher.chain_update(&bytes);
+    let body_bytes = to_bytes(body, usize::MAX).await.unwrap();
+    bytes.extend_from_slice(&body_bytes);
 
-    let req = Request::from_parts(parts, Body::from(bytes));
-    (req, hex::encode(hasher.finalize()))
+    let req = Request::from_parts(parts, Body::from(body_bytes));
+    (req, hex::encode(bytes))
 }
 
 /// Serialize

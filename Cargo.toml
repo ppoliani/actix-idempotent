@@ -4,13 +4,11 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-anyhow = "1.0.95"
 axum = { version = "0.8.1" }
 hex = "0.4.3"
 tower-service = "0.3.3"
 tower-layer = "0.3.3"
 tracing = "0.1.41"
-sha2 = "0.11.0-pre.4"
 ruts = { version = "0.5.2", features = ["axum"] }
 
 [dev-dependencies]
