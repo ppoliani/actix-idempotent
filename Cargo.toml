@@ -3,15 +3,21 @@ name = "axum-idempotent"
 version = "0.1.0"
 edition = "2021"
 
-[features]
-default = ["redis-store"]
-redis-store = ["dep:fred"]
-
 [dependencies]
+anyhow = "1.0.95"
 axum = { version = "0.8.1" }
-fred = { version = "10.0.1", optional = true }
+hex = "0.4.3"
 tower-service = "0.3.3"
 tower-layer = "0.3.3"
-serde = { version = "1.0.217", features = ["derive"] }
+tracing = "0.1.41"
 sha2 = "0.11.0-pre.4"
-thiserror = "2.0.11"
+ruts = { version = "0.5.2", features = ["axum"] }
+
+[dev-dependencies]
+tower-cookies = "0.11.0"
+tokio = { version = "1.43.0", features = ["full"] }
+tower = "0.5.2"
+fred = "10.0.1"
+
+[[test]]
+name = "axum"
