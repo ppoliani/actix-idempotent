@@ -1,5 +1,11 @@
 # Changelog
 
+# [0.1.2] - 2025-02-14
+
+### Changed
+
+Shorten session field (request) by hashing with blake3.
+
 # [0.1.1] - 2025-02-07
 
 ### Fixed

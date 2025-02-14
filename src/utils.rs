@@ -5,17 +5,12 @@ use axum::http::{HeaderMap, HeaderName, StatusCode};
 use axum::response::Response;
 use std::error::Error;
 use std::str::FromStr;
+use blake3::Hasher;
 
 pub(crate) async fn hash_request(req: Request, options: &IdempotentOptions) -> (Request, String) {
-    let mut bytes = Vec::new();
-
-    bytes.extend_from_slice(req.method().as_str().as_bytes());
-    // To prevent collisions such as Method: "POST", Path: "T", Body: "EST"
-    // and Method: "POS", Path: "T", Body: "TEST" which would both produce
-    // the same byte sequence: "POSTEST", use null byte as separator
-    bytes.push(0);
-    bytes.extend_from_slice(req.uri().path().as_bytes());
-    bytes.push(0);
+    let mut hasher = Hasher::new();
+    hasher.update(req.method().as_str().as_bytes());
+    hasher.update(req.uri().path().as_bytes());
 
     if !options.ignore_all_headers {
         // Collect and sort headers for consistent ordering
@@ -38,19 +33,17 @@ pub(crate) async fn hash_request(req: Request, options: &IdempotentOptions) -> (
 
         // Add headers to hash
         for (name, value) in headers {
-            bytes.extend_from_slice(name.as_str().as_bytes());
-            bytes.push(0);
-            bytes.extend_from_slice(value.as_bytes());
-            bytes.push(0);
+            hasher.update(name.as_str().as_bytes());
+            hasher.update(value.as_bytes());
         }
     }
 
     let (parts, body) = req.into_parts();
     let body_bytes = to_bytes(body, usize::MAX).await.unwrap();
-    bytes.extend_from_slice(&body_bytes);
+    hasher.update(&body_bytes);
 
     let req = Request::from_parts(parts, Body::from(body_bytes));
-    (req, hex::encode(bytes))
+    (req, hasher.finalize().to_string())
 }
 
 /// Serialize
