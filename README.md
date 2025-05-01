@@ -3,10 +3,9 @@
 [![Documentation](https://docs.rs/axum-idempotent/badge.svg)](https://docs.rs/axum-idempotent)
 [![Crates.io](https://img.shields.io/crates/v/axum-idempotent.svg)](https://crates.io/crates/axum-idempotent)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Rust](https://img.shields.io/badge/rust-1.75.0%2B-blue.svg?maxAge=3600)](
-github.com/jimmielovell/ruts)
+[![Rust](https://img.shields.io/badge/rust-1.75.0%2B-blue.svg?maxAge=3600)](https://github.com/jimmielovell/axum-idempotent)
 
-Middleware for handling idempotent requests in axum web applications.
+Middleware for handling idempotent requests in axum applications.
 
 This crate provides middleware that ensures idempotency of HTTP requests by caching responses
 in a session store. When an identical request is made within the configured time window,
@@ -31,7 +30,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-axum-idempotent = "0.1.3"
+axum-idempotent = "0.1.4"
 ```
 
 ## Example

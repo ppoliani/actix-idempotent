@@ -1,4 +1,4 @@
-//! Middleware for handling idempotent requests in axum web applications.
+//! Middleware for handling idempotent requests in axum applications.
 //!
 //! This crate provides middleware that ensures idempotency of HTTP requests by caching responses
 //! in a session store. When an identical request is made within the configured time window,
@@ -143,7 +143,7 @@ where
                 Ok(Some(res)) => return Ok(res),
                 Ok(None) => {}  // No cached response, continue
                 Err(err) => {
-                    tracing::error!("Failed to check cached response: {:?}", err);
+                    tracing::error!("Failed to check idempotent cached response: {:?}", err);
                     // Continue without cache
                 }
             }
@@ -155,7 +155,7 @@ where
                 .update(&hash, &response_bytes, Some(config.expire_after_seconds))
                 .await
             {
-                tracing::error!("Failed to cache response: {:?}", err);
+                tracing::error!("Failed to cache idempotent response: {:?}", err);
                 // Continue without caching
             }
 

@@ -28,10 +28,8 @@ pub(crate) async fn hash_request(req: Request, options: &IdempotentOptions) -> (
             })
             .collect();
 
-        // Sort headers by name for consistency
         headers.sort_by(|(a_name, _), (b_name, _)| a_name.as_str().cmp(b_name.as_str()));
 
-        // Add headers to hash
         for (name, value) in headers {
             hasher.update(name.as_str().as_bytes());
             hasher.update(value.as_bytes());
