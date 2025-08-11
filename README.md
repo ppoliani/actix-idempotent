@@ -30,7 +30,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-axum-idempotent = "0.1.4"
+axum-idempotent = "0.1.5"
 ```
 
 ## Example

@@ -56,7 +56,6 @@ pub(crate) async fn response_to_bytes(res: Response<Body>) -> (Response, Vec<u8>
 
     let headers = parts.headers.clone();
     let len = headers.len();
-    // Serialize headers
     for (i, (name, value)) in headers.iter().enumerate() {
         result.extend_from_slice(name.as_str().as_bytes());
         result.extend_from_slice(b": ");
@@ -67,10 +66,8 @@ pub(crate) async fn response_to_bytes(res: Response<Body>) -> (Response, Vec<u8>
         }
     }
 
-    // Add headers/body separator (double CRLF)
+    // headers/body separator (double CRLF)
     result.extend_from_slice(b"\r\n\r\n");
-
-    // Add the body bytes
     result.extend_from_slice(&body_bytes);
 
     (Response::from_parts(parts, Body::from(body_bytes)), result)
