@@ -2,7 +2,7 @@
 mod tests {
   use actix_session::config::{BrowserSession, SessionLifecycle, TtlExtensionPolicy};
   use actix_web::cookie::time::Duration;
-use deadpool_redis::{Config, Runtime};
+  use deadpool_redis::{Config, Runtime};
   use actix_session::storage::RedisSessionStore;
   use actix_session::SessionMiddleware;
   use actix_web::cookie::{Key, SameSite};
@@ -39,7 +39,7 @@ use deadpool_redis::{Config, Runtime};
             .session_lifecycle(SessionLifecycle::BrowserSession(
               BrowserSession::default()
               .state_ttl_extension_policy(TtlExtensionPolicy::OnEveryRequest)
-              .state_ttl(Duration::seconds(10))
+              .state_ttl(Duration::seconds(2))
             ))
             // allow the cookie to be accessed from javascript
             .cookie_http_only(false)
@@ -79,23 +79,28 @@ use deadpool_redis::{Config, Runtime};
     let body1 = body::to_bytes(response1.into_body()).await.unwrap();
     assert_eq!(&body1[..], b"Response #0");
 
+    // TODO: cookie value parsing expects keyvalue pairs of `K=V` format. However security is
+    // not following this pattern. Maybe because we read it from the response while a client e.g. browser
+    // will not even include this part in the cookie??
+    let session_cookie = session_cookie.to_str().unwrap().replace("Secure;", "");
+
     // Second request should return cached response - include the session cookie
     let response2 = TestRequest::get()
       .uri("/test")
-      .insert_header(("cookie", &session_cookie))
+      .insert_header(("cookie", session_cookie.clone()))
       .set_payload(Bytes::new())
       .send_request(&mut app).await;
 
     let body2 = body::to_bytes(response2.into_body()).await.unwrap();
     assert_eq!(&body2[..], b"Response #0");
 
-    // Wait for cache to expire
+    // Wait for cache to expire (ttl is set to 2 secs above)
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
     // Third request should increment counter again - still include the session cookie
     let response3 = TestRequest::get()
       .uri("/test")
-      .insert_header(("cookie", &session_cookie))
+      .insert_header(("cookie", session_cookie))
       .set_payload(Bytes::new())
       .send_request(&mut app).await;
 

@@ -18,7 +18,7 @@ blake3 = "1.8.2"
 tower-service = "0.3.3"
 tower-layer = "0.3.3"
 tracing = "0.1.41"
-actix-web = "4.11.0"
+actix-web = { version = "4.11.0", features = ["cookies", "secure-cookies"] }
 futures-util = "0.3.31"
 actix-session = { version = "0.10.1", features = ["redis-session", "redis-pool"] }
 bytes = "1.10.1"
