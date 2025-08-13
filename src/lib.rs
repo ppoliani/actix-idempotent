@@ -70,7 +70,7 @@
 //! won't result in the operation being performed multiple times.
 
 use actix_web::{
-  dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform}, Error
+  dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform}, Error, HttpRequest
 };
 use std::{
   future::{ready, Ready as StdReady},
@@ -101,7 +101,7 @@ where
 
   forward_ready!(service);
 
-  fn call(&self, req: ServiceRequest) -> Self::Future {
+  fn call(&self, mut req: ServiceRequest) -> Self::Future {
     let srv = self.service.clone();
     let config = self.config.clone();
 
@@ -117,7 +117,7 @@ where
 
       let (req, hash) = hash_request(req, &config).await;
 
-      match check_cached_response(&hash, &session).await {
+      match check_cached_response(&hash, &session, req.request().clone()).await {
         Ok(Some(res)) => return Ok(res),
         Ok(None) => {}  // No cached response, continue
         Err(err) => {
@@ -127,7 +127,7 @@ where
       }
 
       let res = srv.call(req).await?;
-      let (res, response_bytes) = response_to_bytes(res).await;
+      let (res, response_bytes) = response_to_bytes(res).await?;
 
       if let Err(err) = session.insert(&hash, &response_bytes){
         tracing::error!("Failed to cache idempotent response: {:?}", err);
@@ -188,13 +188,12 @@ impl IdempotentFactory {
   }
 }
 
-impl<S, B> Transform<S, ServiceRequest> for IdempotentFactory
+impl<S> Transform<S, ServiceRequest> for IdempotentFactory
 where
-  S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error> + 'static,
+  S: Service<ServiceRequest, Response = ServiceResponse, Error = Error> + 'static,
   S::Future: 'static,
-  B: 'static,
 {
-  type Response = ServiceResponse<B>;
+  type Response = ServiceResponse;
   type Error = Error;
   type InitError = ();
   type Transform = IdempotentMiddleware<S>;
@@ -208,19 +207,20 @@ where
   }
 }
 
-async fn check_cached_response<B>(
+async fn check_cached_response(
   hash: impl AsRef<str>,
   session: &Session,
-) -> Result<Option<ServiceResponse<B>>, Box<dyn StdError + Send + Sync>> {
+  req: HttpRequest,
+) -> Result<Option<ServiceResponse>, Box<dyn StdError + Send + Sync>> {
   let response_bytes = session.get::<Vec<u8>>(hash.as_ref())?;
 
   let res = if let Some(bytes) = response_bytes {
     let response = bytes_to_response(bytes)?;
-
-    Some(response)
+    Some(ServiceResponse::new(req, response))
   } else {
     None
   };
+
 
   Ok(res)
 }
