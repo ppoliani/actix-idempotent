@@ -87,9 +87,9 @@ pub(crate) async fn response_to_bytes(res: ServiceResponse) -> Result<(ServiceRe
   for h in headers {
     res_builder.insert_header(h);
   }
-  res_builder.body(body);
+  let res = res_builder.body(body);
 
-  Ok((ServiceResponse::new(req, res_builder.finish()), result))
+  Ok((ServiceResponse::new(req, res), result))
 }
 
 /// Deserialize bytes back into a `axum::response::Response`.
@@ -114,9 +114,9 @@ pub(crate) fn bytes_to_response(bytes: Vec<u8>) -> Result<HttpResponse, Box<dyn 
     for h in headers {
       res_builder.insert_header(h);
     }
-    res_builder.body(body_bytes.to_vec());
+    let res = res_builder.body(body_bytes.to_vec());
 
-    Ok(res_builder.finish())
+    Ok(res)
 }
 
 /// Parse headers from bytes.
@@ -200,40 +200,39 @@ mod tests {
     assert_ne!(hash, hash3, "Different body should produce different hash");
   }
 
-  // #[tokio::test]
-  // async fn test_response_to_bytes() {
-  //     // Create a response with known values
-  //     let response = Response::builder()
-  //         .status(StatusCode::OK)
-  //         .header("Content-Type", "text/plain")
-  //         .header("X-Custom", "test-value")
-  //         .body(Body::from("test response body"))
-  //         .unwrap();
+  #[tokio::test]
+  async fn test_response_to_bytes() {
+    // Create a response with known values
+    let body = Bytes::from("test response body");
+    let response = HttpResponseBuilder::new(StatusCode::OK)
+    .insert_header(("Content-Type", "text/plain"))
+    .insert_header(("X-Custom", "test-value"))
+    .body(body);
 
-  //     let (_new_res, bytes) = response_to_bytes(response).await;
+    let service_response = ServiceResponse::new(TestRequest::default().to_http_request(), response);
 
-  //     // Test the serialized response can be deserialized back
-  //     let reconstructed = bytes_to_response(bytes).unwrap();
+    let (_new_res, bytes) = response_to_bytes(service_response).await.unwrap();
 
-  //     // Verify status code
-  //     assert_eq!(reconstructed.status(), StatusCode::OK);
+    // Test the serialized response can be deserialized back
+    let reconstructed = bytes_to_response(bytes).unwrap();
 
-  //     // Verify headers
-  //     assert_eq!(
-  //         reconstructed.headers().get("Content-Type").unwrap(),
-  //         "text/plain"
-  //     );
-  //     assert_eq!(
-  //         reconstructed.headers().get("X-Custom").unwrap(),
-  //         "test-value"
-  //     );
+    // Verify status code
+    assert_eq!(reconstructed.status(), StatusCode::OK);
 
-  //     // Verify body
-  //     let body_bytes = to_bytes(reconstructed.into_body(), usize::MAX)
-  //         .await
-  //         .unwrap();
-  //     assert_eq!(&body_bytes[..], b"test response body");
-  // }
+    // Verify headers
+    assert_eq!(
+      reconstructed.headers().get("Content-Type").unwrap(),
+      "text/plain"
+    );
+    assert_eq!(
+      reconstructed.headers().get("X-Custom").unwrap(),
+      "test-value"
+    );
+
+    // Verify body
+    let body_bytes = body::to_bytes(reconstructed.into_body()).await.unwrap();
+    assert_eq!(&body_bytes[..], b"test response body");
+  }
 
   // #[tokio::test]
   // async fn test_response_to_bytes_with_empty_body() {
