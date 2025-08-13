@@ -279,29 +279,29 @@ mod tests {
     assert_eq!(&body_bytes[..], original_body.to_vec());
   }
 
-  // #[tokio::test]
-  // async fn test_header_serialization_format() {
-  //     let response = Response::builder()
-  //         .status(StatusCode::OK)
-  //         .header("First", "1")
-  //         .header("Second", "2")
-  //         .body(Body::empty())
-  //         .unwrap();
+  #[tokio::test]
+  async fn test_header_serialization_format() {
+    let response = HttpResponseBuilder::new(StatusCode::OK)
+      .insert_header(("First", "1"))
+      .insert_header(("Second", "2"))
+      .body(Bytes::new());
 
-  //     let (_, bytes) = response_to_bytes(response).await;
+    let service_response = ServiceResponse::new(TestRequest::default().to_http_request(), response);
 
-  //     // Skip status code (2 bytes)
-  //     let headers_and_body = &bytes[2..];
-  //     let headers_str = std::str::from_utf8(headers_and_body).unwrap();
+    let (_, bytes) = response_to_bytes(service_response).await.unwrap();
 
-  //     // The header names are being normalized to lowercase by the http crate
-  //     // Headers should be:
-  //     // first: 1\r\n
-  //     // second: 2\r\n
-  //     // \r\n
-  //     assert_eq!(
-  //         headers_str, "first: 1\r\nsecond: 2\r\n\r\n",
-  //         "Headers should be properly formatted with correct CRLF sequences"
-  //     );
-  // }
+    // Skip status code (2 bytes)
+    let headers_and_body = &bytes[2..];
+    let headers_str = std::str::from_utf8(headers_and_body).unwrap();
+
+    // The header names are being normalized to lowercase by the http crate
+    // Headers should be:
+    // first: 1\r\n
+    // second: 2\r\n
+    // \r\n
+    assert_eq!(
+      headers_str, "first: 1\r\nsecond: 2\r\n\r\n",
+      "Headers should be properly formatted with correct CRLF sequences"
+    );
+  }
 }
