@@ -69,18 +69,17 @@
 //! This ensures that retrying the same request (e.g., due to network issues or client retries)
 //! won't result in the operation being performed multiple times.
 
-use axum::extract::Request;
-use axum::response::Response;
-use axum::RequestExt;
-use ruts::store::SessionStore;
-use ruts::Session;
-use std::error::Error;
-use std::future::Future;
-use std::marker::PhantomData;
-use std::pin::Pin;
-use std::task::{Context, Poll};
-use tower_layer::Layer;
-use tower_service::Service;
+use actix_web::{
+  dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform}, Error
+};
+use std::{
+  future::{Future, ready, Ready as StdReady},
+  rc::Rc, marker::PhantomData, pin::Pin,
+  task::{Context, Poll}, error::Error as StdError,
+};
+use actix_session::{storage::{RedisSessionStore, SessionStore}, Session, SessionMiddleware};
+// use std::error::Error;
+use futures_util::future::{LocalBoxFuture, ok, err, Ready};
 
 mod utils;
 
@@ -89,79 +88,60 @@ pub use crate::config::IdempotentOptions;
 
 use crate::utils::{bytes_to_response, hash_request, response_to_bytes};
 
-/// Service that handles idempotent request processing.
-#[derive(Clone, Debug)]
-pub struct IdempotentService<S, T> {
-    inner: S,
-    config: IdempotentOptions,
-    phantom: PhantomData<T>,
+pub struct IdempotentMiddleware<S> {
+  service: Rc<S>,
+  config: IdempotentOptions,
 }
 
-impl<S, T> IdempotentService<S, T> {
-    pub const fn new(inner: S, config: IdempotentOptions) -> Self {
-        IdempotentService::<S, T> {
-            inner,
-            config,
-            phantom: PhantomData,
-        }
-    }
-}
-
-impl<S, T> Service<Request> for IdempotentService<S, T>
+impl<S, B> Service<ServiceRequest> for IdempotentMiddleware<S>
 where
-    S: Service<Request, Response = Response> + Clone + Send + 'static,
-    S::Error: Send,
-    S::Future: Send + 'static,
-    T: SessionStore,
+  S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error> + 'static,
 {
-    type Response = S::Response;
-    type Error = S::Error;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+  type Response = ServiceResponse<B>;
+  type Error = Error;
+  type Future = LocalBoxFuture<'static, Result<Self::Response, Self::Error>>;
 
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.inner.poll_ready(cx).map_err(Into::into)
-    }
+  forward_ready!(service);
 
-    fn call(&mut self, mut req: Request) -> Self::Future {
-        let clone = self.inner.clone();
-        let mut inner = std::mem::replace(&mut self.inner, clone);
-        let config = self.config.clone();
+  fn call(&self, req: ServiceRequest) -> Self::Future {
+    let srv = self.service.clone();
+    let config = self.config.clone();
 
-        Box::pin(async move {
-            let session = match req.extract_parts::<Session<T>>().await {
-                Ok(session) => session,
-                Err(err) => {
-                    tracing::error!("Failed to extract Session from request: {:?}", err);
-                    // Forward the request to the inner service without idempotency
-                    return inner.call(req).await;
-                }
-            };
+    Box::pin(async move {
+      let session = match req.extract::<Session>().await {
+        Ok(session) => session,
+        Err(err) => {
+          tracing::error!("Failed to extract Session from request: {:?}", err);
+          // Forward the request to the inner service without idempotency
+          return srv.call(req).await;
+        }
+      };
 
-            let (req, hash) = hash_request(req, &config).await;
+      let (req, hash) = hash_request(req, &config).await;
 
-            match check_cached_response(&hash, &session).await {
-                Ok(Some(res)) => return Ok(res),
-                Ok(None) => {}  // No cached response, continue
-                Err(err) => {
-                    tracing::error!("Failed to check idempotent cached response: {:?}", err);
-                    // Continue without cache
-                }
-            }
+      match check_cached_response(&hash, &session).await {
+        Ok(Some(res)) => return Ok(res),
+        Ok(None) => {}  // No cached response, continue
+        Err(err) => {
+          tracing::error!("Failed to check idempotent cached response: {:?}", err);
+          // Continue without cache
+        }
+      }
 
-            let res = inner.call(req).await?;
-            let (res, response_bytes) = response_to_bytes(res).await;
+      let res = srv.call(req).await?;
+      let (res, response_bytes) = response_to_bytes(res).await;
 
-            if let Err(err) = session
-                .update(&hash, &response_bytes, Some(config.expire_after_seconds))
-                .await
-            {
-                tracing::error!("Failed to cache idempotent response: {:?}", err);
-                // Continue without caching
-            }
+      if let Err(err) = session
+        .insert(&hash, &response_bytes, Some(config.expire_after_seconds))
+        .await
+      {
+        tracing::error!("Failed to cache idempotent response: {:?}", err);
+        // Continue without caching
+      }
 
-            Ok(res)
-        })
-    }
+      Ok(res)
+    })
+  }
 }
 
 /// Layer to apply [`IdempotentService`] middleware in `axum`.
@@ -201,41 +181,51 @@ where
 /// # }
 /// ```
 #[derive(Clone, Debug)]
-pub struct IdempotentLayer<T> {
-    config: IdempotentOptions,
-    phantom_data: PhantomData<T>,
+pub struct IdempotentFactory {
+  config: IdempotentOptions,
 }
 
-impl<T> IdempotentLayer<T> {
-    pub const fn new(config: IdempotentOptions) -> Self {
-        IdempotentLayer {
-            config,
-            phantom_data: PhantomData,
-        }
+impl IdempotentFactory {
+  pub const fn new(config: IdempotentOptions) -> Self {
+    IdempotentFactory {
+      config,
     }
+  }
 }
 
-impl<S, T> Layer<S> for IdempotentLayer<T> {
-    type Service = IdempotentService<S, T>;
+impl<S, B> Transform<S, ServiceRequest> for IdempotentFactory
+where
+  S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error> + 'static,
+  S::Future: 'static,
+  B: 'static,
+{
+  type Response = ServiceResponse<B>;
+  type Error = Error;
+  type InitError = ();
+  type Transform = IdempotentMiddleware<S>;
+  type Future = StdReady<Result<Self::Transform, Self::InitError>>;
 
-    fn layer(&self, service: S) -> Self::Service {
-        IdempotentService::new(service, self.config.clone())
-    }
+  fn new_transform(&self, service: S) -> Self::Future {
+    ready(Ok(IdempotentMiddleware {
+      service: Rc::new(service),
+      config: self.config.clone(),
+    }))
+  }
 }
 
-async fn check_cached_response<T: SessionStore>(
-    hash: impl AsRef<str>,
-    session: &Session<T>,
-) -> Result<Option<Response>, Box<dyn Error + Send + Sync>> {
-    let response_bytes = session.get::<Vec<u8>>(hash.as_ref()).await?;
+async fn check_cached_response<B>(
+  hash: impl AsRef<str>,
+  session: &Session,
+) -> Result<Option<ServiceResponse<B>>, Box<dyn StdError + Send + Sync>> {
+  let response_bytes = session.get::<Vec<u8>>(hash.as_ref())?;
 
-    let res = if let Some(bytes) = response_bytes {
-        let response = bytes_to_response(bytes)?;
+  let res = if let Some(bytes) = response_bytes {
+    let response = bytes_to_response(bytes)?;
 
-        Some(response)
-    } else {
-        None
-    };
+    Some(response)
+  } else {
+    None
+  };
 
-    Ok(res)
+  Ok(res)
 }
