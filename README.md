@@ -16,7 +16,7 @@ the cached response is returned instead of executing the request again.
 - Request deduplication based on method, path, headers, and body
 - Configurable response caching duration
 - Header filtering options to exclude specific headers from idempotency checks
-- Integration with session-based storage (via [ruts](https://crates.io/crates/ruts))
+- Integration with session-based storage (via [actix-session](https://docs.rs/actix-session/latest/actix_session/))
 
 ## Usage
 
