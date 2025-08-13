@@ -144,7 +144,7 @@ fn parse_headers(header_bytes: &[u8]) -> Result<HeaderMap, Box<dyn Error + Send 
 
 #[cfg(test)]
 mod tests {
-  use actix_web::{http::Method, test::TestRequest, HttpRequest};
+  use actix_web::{http::Method, test::TestRequest, HttpMessage};
   use bytes::Bytes;
 
   use super::*;
@@ -153,41 +153,48 @@ mod tests {
   #[tokio::test]
   async fn test_hash_request() {
     // Create a request with a known body
+    let payload = Bytes::from("test body");
     let req = TestRequest::default()
       .method(Method::POST)
       .uri("/test/endpoint")
-      .set_payload(Bytes::from("test body"))
+      .set_payload(payload.clone())
       .to_http_request();
 
-    let (new_req, hash) = hash_request(req, &IdempotentOptions::default()).await;
+    let req = ServiceRequest::from_parts(req, Payload::from(payload));
+
+    let (mut new_req, hash) = hash_request(req, &IdempotentOptions::default()).await;
 
     // Verify the new request matches original
     assert_eq!(new_req.method(), Method::POST);
     assert_eq!(new_req.uri().path(), "/test/endpoint");
 
     // Verify body is preserved
-    let body_bytes = to_bytes(new_req.into_body(), usize::MAX).await.unwrap();
+    let body_bytes = read_req_body(&mut new_req.take_payload()).await.unwrap();
     assert_eq!(&body_bytes[..], b"test body");
 
     // Verify hash is deterministic
-    let req2 = Request::builder()
-        .method(Method::POST)
-        .uri("/test/endpoint")
-        .body(Body::from("test body"))
-        .unwrap();
+    let payload = Bytes::from("test body");
+    let req2 = TestRequest::default()
+      .method(Method::POST)
+      .uri("/test/endpoint")
+      .set_payload(payload.clone())
+      .to_http_request();
 
+    let req2 = ServiceRequest::from_parts(req2, Payload::from(payload));
     let (_, hash2) = hash_request(req2, &IdempotentOptions::default()).await;
     assert_eq!(
-      hash, hash2,
-      "Hash should be deterministic for identical requests"
+    hash, hash2,
+    "Hash should be deterministic for identical requests"
     );
 
     // Verify different body produces different hash
-    let req3 = Request::builder()
-        .method(Method::POST)
-        .uri("/test/endpoint")
-        .body(Body::from("different body"))
-        .unwrap();
+    let payload = Bytes::from("different body");
+    let req3 = TestRequest::default()
+      .method(Method::POST)
+      .uri("/test/endpoint")
+      .set_payload(payload.clone())
+      .to_http_request();
+    let req3 = ServiceRequest::from_parts(req3, Payload::from(payload));
 
     let (_, hash3) = hash_request(req3, &IdempotentOptions::default()).await;
     assert_ne!(hash, hash3, "Different body should produce different hash");
