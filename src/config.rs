@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-
 use actix_web::http::header::{HeaderMap, HeaderName, HeaderValue};
 
 /// Configuration options for the idempotency layer.
@@ -11,38 +10,29 @@ use actix_web::http::header::{HeaderMap, HeaderName, HeaderValue};
 ///
 /// # Example
 /// ```rust
-/// use axum_idempotent::IdempotentOptions;
-/// use axum::http::HeaderName;
+/// use actix_idempotent::IdempotentOptions;
+/// use actix_web::http::header::HeaderName;
 ///
 /// let options_1 = IdempotentOptions::default()
-///     .expire_after(60) // Cache for 60 seconds
 ///     .ignore_header(HeaderName::from_static("x-request-id"))
 ///     .ignore_all_headers();
 ///
-/// let options_2 = IdempotentOptions::new(60);
+/// let options_2 = IdempotentOptions::new();
 /// ```
 #[derive(Clone, Debug)]
 pub struct IdempotentOptions {
-  pub(crate) expire_after_seconds: i64,
   pub(crate) ignored_headers: HashSet<HeaderName>,
   pub(crate) ignored_header_values: HeaderMap,
   pub(crate) ignore_all_headers: bool,
 }
 
 impl IdempotentOptions {
-  pub fn new(expire_after_seconds: i64) -> Self {
+  pub fn new() -> Self {
     Self {
-      expire_after_seconds,
       ignored_headers: HashSet::new(),
       ignored_header_values: HeaderMap::new(),
       ignore_all_headers: false,
     }
-  }
-
-  /// Sets the expiration time in seconds for cached responses.
-  pub fn expire_after(mut self, seconds: i64) -> Self {
-    self.expire_after_seconds = seconds;
-    self
   }
 
   /// Adds a header to the list of headers that should be ignored when calculating the request hash.
@@ -71,7 +61,6 @@ impl IdempotentOptions {
 impl Default for IdempotentOptions {
   fn default() -> Self {
     let mut options = Self {
-      expire_after_seconds: 300, // 5 mins default
       ignored_headers: HashSet::new(),
       ignored_header_values: HeaderMap::new(),
       ignore_all_headers: false,

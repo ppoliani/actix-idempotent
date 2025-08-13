@@ -28,7 +28,7 @@ mod tests {
     let pool = config.create_pool(Some(Runtime::Tokio1)).unwrap();
     let redis_store = RedisSessionStore::new_pooled(pool).await.unwrap();
 
-    let idempotent_factory = IdempotentFactory::new(IdempotentOptions::default().expire_after(3));
+    let idempotent_factory = IdempotentFactory::new(IdempotentOptions::default());
     let secret_key = Key::generate();
     let app = test::init_service(
       App::new()
@@ -62,10 +62,6 @@ mod tests {
       .set_payload(Bytes::new())
       .send_request(&mut app).await;
     assert!(response1.status().is_success(), "Something went wrong");
-
-    for h in response1.headers() {
-      println!("{} => {:?}", h.0, h.1)
-    }
 
     // First request should increment counter
     // Extract the session cookie from the first response
