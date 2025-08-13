@@ -1,11 +1,11 @@
-# axum-idempotent
+# actix-idempotent
 
-[![Documentation](https://docs.rs/axum-idempotent/badge.svg)](https://docs.rs/axum-idempotent)
-[![Crates.io](https://img.shields.io/crates/v/axum-idempotent.svg)](https://crates.io/crates/axum-idempotent)
+[![Documentation](https://docs.rs/actix-idempotent/badge.svg)](https://docs.rs/actix-idempotent)
+[![Crates.io](https://img.shields.io/crates/v/actix-idempotent.svg)](https://crates.io/crates/actix-idempotent)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Rust](https://img.shields.io/badge/rust-1.75.0%2B-blue.svg?maxAge=3600)](https://github.com/jimmielovell/axum-idempotent)
+[![Rust](https://img.shields.io/badge/rust-1.75.0%2B-blue.svg?maxAge=3600)](https://github.com/jimmielovell/actix-idempotent)
 
-Middleware for handling idempotent requests in axum applications.
+Middleware for handling idempotent requests in actix-web applications.
 
 This crate provides middleware that ensures idempotency of HTTP requests by caching responses
 in a session store. When an identical request is made within the configured time window,
@@ -18,58 +18,72 @@ the cached response is returned instead of executing the request again.
 - Header filtering options to exclude specific headers from idempotency checks
 - Integration with session-based storage (via [ruts](https://crates.io/crates/ruts))
 
-## Dependencies
-
-This middleware requires the `SessionLayer` from the [ruts](https://crates.io/crates/ruts) crate. The layers must be added in the correct order:
-1. `SessionLayer`
-2. `IdempotentLayer`
-
 ## Usage
 
 Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-axum-idempotent = "0.1.5"
+actix-idempotent = "0.1.0"
 ```
 
 ## Example
 
 ```rust
-use std::sync::Arc;
-use axum::{Router, routing::post};
-use fred::clients::Client;
-use fred::interfaces::ClientLike;
-use ruts::{CookieOptions, SessionLayer};
-use axum_idempotent::{IdempotentLayer, IdempotentOptions};
-use ruts::store::redis::RedisStore;
-use tower_cookies::CookieManagerLayer;
+use actix_session::config::{BrowserSession, SessionLifecycle, TtlExtensionPolicy};
+use actix_web::cookie::time::Duration;
+use deadpool_redis::{Config, Runtime};
+use actix_session::storage::RedisSessionStore;
+use actix_session::SessionMiddleware;
+use actix_web::cookie::{Key, SameSite};
+use actix_web::dev::{Service, ServiceResponse};
+use actix_web::web::get;
+use actix_web::App;
+use actix_web::HttpServer;
+use actix_idempotent::{IdempotentFactory, IdempotentOptions};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::io::Result;
 
-#[tokio::main]
-async fn main() {
-    let client = Client::default();
-    client.init().await.unwrap();
-    let store = Arc::new(RedisStore::new(Arc::new(client)));
+static COUNTER: AtomicU64 = AtomicU64::new(0);
 
-    // Configure the idempotency layer
-    let idempotent_options = IdempotentOptions::default()
-        .expire_after(60)  // Cache responses for 60 seconds
-        .ignore_header("x-request-id".parse().unwrap());
-
-    // Create the router with idempotency middleware
-    let app = Router::new()
-        .route("/payments", post(process_payment))
-        .layer(IdempotentLayer::<RedisStore<Client>>::new(idempotent_options))
-        .layer(SessionLayer::new(store)
-            .with_cookie_options(CookieOptions::build()
-                .name("session")
-                .max_age(3600)
-                .path("/")))
-        .layer(CookieManagerLayer::new());
+async fn increment_counter() -> String {
+  let count = COUNTER.fetch_add(1, Ordering::SeqCst);
+  format!("Response #{}", count)
 }
 
-async fn process_payment() -> &'static str {
-    "Payment processed"
+#[actix_web::main]
+async fn main() -> Result<()> {
+  let conn_string = format!("redis://:{}@{}:{}", "password", "127.0.0.1", "6379");
+  let config = Config::from_url(conn_string);
+  let pool = config.create_pool(Some(Runtime::Tokio1)).unwrap();
+  let redis_store = RedisSessionStore::new_pooled(pool).await.unwrap();
+
+  let secret_key = Key::generate();
+
+  HttpServer::new(move || {
+    let idempotent_factory = IdempotentFactory::new(IdempotentOptions::default());
+
+    App::new()
+      // Add session management to your application using Redis for session state storage
+      .wrap(
+        SessionMiddleware::builder(redis_store.clone(), secret_key.clone())
+          .cookie_name("session".to_string())
+          .session_lifecycle(SessionLifecycle::BrowserSession(
+            BrowserSession::default()
+            .state_ttl_extension_policy(TtlExtensionPolicy::OnEveryRequest)
+            .state_ttl(Duration::seconds(2))
+          ))
+          // allow the cookie to be accessed from javascript
+          .cookie_http_only(false)
+          // allow the cookie only from the current domain
+          .cookie_same_site(SameSite::Strict)
+          .build(),
+      )
+      .route("/test", get().to(increment_counter).wrap(idempotent_factory))
+    })
+    .bind("0.0.0.0:4000")?
+    .run()
+    .await
 }
 ```
 

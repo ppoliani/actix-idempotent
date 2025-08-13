@@ -1,4 +1,4 @@
-//! Middleware for handling idempotent requests in axum applications.
+//! Middleware for handling idempotent requests in actix-web applications.
 //!
 //! This crate provides middleware that ensures idempotency of HTTP requests by caching responses
 //! in a session store. When an identical request is made within the configured time window,
@@ -9,49 +9,66 @@
 //! - Request deduplication based on method, path, headers, and body
 //! - Configurable response caching duration
 //! - Header filtering options to exclude specific headers from idempotency checks
-//! - Integration with session-based storage (via `ruts`)
+//! - Integration with session-based storage (via `actix-session`)
 //!
 //! # Example
 //!
 //! ```no_run
-//! use std::sync::Arc;
-//! use axum::{Router, routing::post};
-//! use fred::clients::Client;
-//! use fred::interfaces::ClientLike;
-//! use ruts::{CookieOptions, SessionLayer};
-//! use axum_idempotent::{IdempotentLayer, IdempotentOptions};
-//! use ruts::store::redis::RedisStore;
-//! use tower_cookies::CookieManagerLayer;
-//!
-//! # #[tokio::main]
-//! # async fn main() {
-//! # let client = Client::default();
-//! # client.init().await.unwrap();
-//! # let store = Arc::new(RedisStore::new(Arc::new(client)));
-//!
-//! // Configure the idempotency layer
-//! let idempotent_options = IdempotentOptions::default()
-//!     .expire_after(60)  // Cache responses for 60 seconds
-//!     .ignore_header("x-request-id".parse().unwrap());
-//!
-//! // Create the router with idempotency middleware
-//! let app = Router::new()
-//!     .route("/payments", post(process_payment))
-//!     .layer(IdempotentLayer::<RedisStore<Client>>::new(idempotent_options))
-//!     .layer(SessionLayer::new(store)
-//!         .with_cookie_options(CookieOptions::build()
-//!             .name("session")
-//!             .max_age(3600)
-//!             .path("/")))
-//!     .layer(CookieManagerLayer::new());
-//!
-//! # let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
-//! # axum::serve(listener, app).await.unwrap();
-//! # }
-//! #
-//! # async fn process_payment() -> &'static str {
-//! #     "Payment processed"
-//! # }
+//! use actix_session::config::{BrowserSession, SessionLifecycle, TtlExtensionPolicy};
+//! use actix_web::cookie::time::Duration;
+//! use deadpool_redis::{Config, Runtime};
+//! use actix_session::storage::RedisSessionStore;
+//! use actix_session::SessionMiddleware;
+//! use actix_web::cookie::{Key, SameSite};
+//! use actix_web::dev::{Service, ServiceResponse};
+//! use actix_web::web::get;
+//! use actix_web::App;
+//! use actix_web::HttpServer;
+//! use actix_idempotent::{IdempotentFactory, IdempotentOptions};
+//! use std::sync::atomic::{AtomicU64, Ordering};
+//! use std::io::Result;
+//! 
+//! static COUNTER: AtomicU64 = AtomicU64::new(0);
+//! 
+//! async fn increment_counter() -> String {
+//!   let count = COUNTER.fetch_add(1, Ordering::SeqCst);
+//!   format!("Response #{}", count)
+//! }
+//! 
+//! #[actix_web::main]
+//! async fn main() -> Result<()> {
+//!   let conn_string = format!("redis://:{}@{}:{}", "password", "127.0.0.1", "6379");
+//!   let config = Config::from_url(conn_string);
+//!   let pool = config.create_pool(Some(Runtime::Tokio1)).unwrap();
+//!   let redis_store = RedisSessionStore::new_pooled(pool).await.unwrap();
+//! 
+//!   let secret_key = Key::generate();
+//! 
+//!   HttpServer::new(move || {
+//!     let idempotent_factory = IdempotentFactory::new(IdempotentOptions::default());
+//! 
+//!     App::new()
+//!       // Add session management to your application using Redis for session state storage
+//!       .wrap(
+//!         SessionMiddleware::builder(redis_store.clone(), secret_key.clone())
+//!           .cookie_name("session".to_string())
+//!           .session_lifecycle(SessionLifecycle::BrowserSession(
+//!             BrowserSession::default()
+//!             .state_ttl_extension_policy(TtlExtensionPolicy::OnEveryRequest)
+//!             .state_ttl(Duration::seconds(2))
+//!           ))
+//!           // allow the cookie to be accessed from javascript
+//!           .cookie_http_only(false)
+//!           // allow the cookie only from the current domain
+//!           .cookie_same_site(SameSite::Strict)
+//!           .build(),
+//!       )
+//!       .route("/test", get().to(increment_counter).wrap(idempotent_factory))
+//!     })
+//!     .bind("0.0.0.0:4000")?
+//!     .run()
+//!     .await
+//! }
 //! ```
 //!
 //! # How it Works
@@ -69,18 +86,15 @@
 //! This ensures that retrying the same request (e.g., due to network issues or client retries)
 //! won't result in the operation being performed multiple times.
 
-use axum::extract::Request;
-use axum::response::Response;
-use axum::RequestExt;
-use ruts::store::SessionStore;
-use ruts::Session;
-use std::error::Error;
-use std::future::Future;
-use std::marker::PhantomData;
-use std::pin::Pin;
-use std::task::{Context, Poll};
-use tower_layer::Layer;
-use tower_service::Service;
+use actix_web::{
+  dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform}, Error, HttpRequest
+};
+use std::{
+  future::{ready, Ready as StdReady},
+  rc::Rc, error::Error as StdError,
+};
+use actix_session::Session;
+use futures_util::future::LocalBoxFuture;
 
 mod utils;
 
@@ -89,153 +103,105 @@ pub use crate::config::IdempotentOptions;
 
 use crate::utils::{bytes_to_response, hash_request, response_to_bytes};
 
-/// Service that handles idempotent request processing.
-#[derive(Clone, Debug)]
-pub struct IdempotentService<S, T> {
-    inner: S,
-    config: IdempotentOptions,
-    phantom: PhantomData<T>,
+pub struct IdempotentMiddleware<S> {
+  service: Rc<S>,
+  config: IdempotentOptions,
 }
 
-impl<S, T> IdempotentService<S, T> {
-    pub const fn new(inner: S, config: IdempotentOptions) -> Self {
-        IdempotentService::<S, T> {
-            inner,
-            config,
-            phantom: PhantomData,
-        }
-    }
-}
-
-impl<S, T> Service<Request> for IdempotentService<S, T>
+impl<S> Service<ServiceRequest> for IdempotentMiddleware<S>
 where
-    S: Service<Request, Response = Response> + Clone + Send + 'static,
-    S::Error: Send,
-    S::Future: Send + 'static,
-    T: SessionStore,
+  S: Service<ServiceRequest, Response = ServiceResponse, Error = Error> + 'static,
 {
-    type Response = S::Response;
-    type Error = S::Error;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+  type Response = ServiceResponse;
+  type Error = Error;
+  type Future = LocalBoxFuture<'static, Result<Self::Response, Self::Error>>;
 
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.inner.poll_ready(cx).map_err(Into::into)
-    }
+  forward_ready!(service);
 
-    fn call(&mut self, mut req: Request) -> Self::Future {
-        let clone = self.inner.clone();
-        let mut inner = std::mem::replace(&mut self.inner, clone);
-        let config = self.config.clone();
+  fn call(&self, mut req: ServiceRequest) -> Self::Future {
+    let srv = self.service.clone();
+    let config = self.config.clone();
 
-        Box::pin(async move {
-            let session = match req.extract_parts::<Session<T>>().await {
-                Ok(session) => session,
-                Err(err) => {
-                    tracing::error!("Failed to extract Session from request: {:?}", err);
-                    // Forward the request to the inner service without idempotency
-                    return inner.call(req).await;
-                }
-            };
-
-            let (req, hash) = hash_request(req, &config).await;
-
-            match check_cached_response(&hash, &session).await {
-                Ok(Some(res)) => return Ok(res),
-                Ok(None) => {}  // No cached response, continue
-                Err(err) => {
-                    tracing::error!("Failed to check idempotent cached response: {:?}", err);
-                    // Continue without cache
-                }
-            }
-
-            let res = inner.call(req).await?;
-            let (res, response_bytes) = response_to_bytes(res).await;
-
-            if let Err(err) = session
-                .update(&hash, &response_bytes, Some(config.expire_after_seconds))
-                .await
-            {
-                tracing::error!("Failed to cache idempotent response: {:?}", err);
-                // Continue without caching
-            }
-
-            Ok(res)
-        })
-    }
-}
-
-/// Layer to apply [`IdempotentService`] middleware in `axum`.
-///
-/// This layer caches responses in a session store and returns the cached response
-/// for identical requests within the configured expiration time.
-///
-/// # Example
-/// ```no_run
-/// # use std::sync::Arc;
-/// # use axum::Router;
-/// # use axum::routing::get;
-/// # use fred::clients::Client;
-/// # use fred::interfaces::ClientLike;
-/// # use ruts::{CookieOptions, SessionLayer};
-/// # use axum_idempotent::{IdempotentLayer, IdempotentOptions};
-/// # use ruts::store::redis::RedisStore;
-/// # use tower_cookies::CookieManagerLayer;
-///
-/// # #[tokio::main]
-/// # async fn main() {
-/// # let client = Client::default();
-/// # client.init().await.unwrap();
-/// # let store = Arc::new(RedisStore::new(Arc::new(client)));
-///
-/// let idempotent_options = IdempotentOptions::default().expire_after(3);
-/// let idempotent_layer = IdempotentLayer::<RedisStore<Client>>::new(idempotent_options);
-///
-/// let app = Router::new()
-///     .route("/test", get(|| async { "Hello, World!"}))
-///     .layer(idempotent_layer)
-///     .layer(SessionLayer::new(store.clone())
-///         .with_cookie_options(CookieOptions::build().name("session").max_age(10).path("/")))
-///     .layer(CookieManagerLayer::new());
-/// # let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
-/// # axum::serve(listener, app).await.unwrap();
-/// # }
-/// ```
-#[derive(Clone, Debug)]
-pub struct IdempotentLayer<T> {
-    config: IdempotentOptions,
-    phantom_data: PhantomData<T>,
-}
-
-impl<T> IdempotentLayer<T> {
-    pub const fn new(config: IdempotentOptions) -> Self {
-        IdempotentLayer {
-            config,
-            phantom_data: PhantomData,
+    Box::pin(async move {
+      let session = match req.extract::<Session>().await {
+        Ok(session) => session,
+        Err(err) => {
+          tracing::error!("Failed to extract Session from request: {:?}", err);
+          // Forward the request to the inner service without idempotency
+          return srv.call(req).await;
         }
-    }
+      };
+
+      let (req, hash) = hash_request(req, &config).await;
+
+      match check_cached_response(&hash, &session, req.request().clone()).await {
+        Ok(Some(res)) => return Ok(res),
+        Ok(None) => {}  // No cached response, continue
+        Err(err) => {
+          tracing::error!("Failed to check idempotent cached response: {:?}", err);
+          // Continue without cache
+        }
+      }
+
+      let res = srv.call(req).await?;
+      let (res, response_bytes) = response_to_bytes(res).await?;
+
+      if let Err(err) = session.insert(&hash, &response_bytes){
+        tracing::error!("Failed to cache idempotent response: {:?}", err);
+        // Continue without caching
+      }
+
+      Ok(res)
+    })
+  }
 }
 
-impl<S, T> Layer<S> for IdempotentLayer<T> {
-    type Service = IdempotentService<S, T>;
-
-    fn layer(&self, service: S) -> Self::Service {
-        IdempotentService::new(service, self.config.clone())
-    }
+#[derive(Clone, Debug)]
+pub struct IdempotentFactory {
+  config: IdempotentOptions,
 }
 
-async fn check_cached_response<T: SessionStore>(
-    hash: impl AsRef<str>,
-    session: &Session<T>,
-) -> Result<Option<Response>, Box<dyn Error + Send + Sync>> {
-    let response_bytes = session.get::<Vec<u8>>(hash.as_ref()).await?;
+impl IdempotentFactory {
+  pub const fn new(config: IdempotentOptions) -> Self {
+    IdempotentFactory {
+      config,
+    }
+  }
+}
 
-    let res = if let Some(bytes) = response_bytes {
-        let response = bytes_to_response(bytes)?;
+impl<S> Transform<S, ServiceRequest> for IdempotentFactory
+where
+  S: Service<ServiceRequest, Response = ServiceResponse, Error = Error> + 'static,
+  S::Future: 'static,
+{
+  type Response = ServiceResponse;
+  type Error = Error;
+  type InitError = ();
+  type Transform = IdempotentMiddleware<S>;
+  type Future = StdReady<Result<Self::Transform, Self::InitError>>;
 
-        Some(response)
-    } else {
-        None
-    };
+  fn new_transform(&self, service: S) -> Self::Future {
+    ready(Ok(IdempotentMiddleware {
+      service: Rc::new(service),
+      config: self.config.clone(),
+    }))
+  }
+}
 
-    Ok(res)
+async fn check_cached_response(
+  hash: impl AsRef<str>,
+  session: &Session,
+  req: HttpRequest,
+) -> Result<Option<ServiceResponse>, Box<dyn StdError + Send + Sync>> {
+  let response_bytes = session.get::<Vec<u8>>(hash.as_ref())?;
+
+  let res = if let Some(bytes) = response_bytes {
+    let response = bytes_to_response(bytes)?;
+    Some(ServiceResponse::new(req, response))
+  } else {
+    None
+  };
+
+
+  Ok(res)
 }
