@@ -205,9 +205,9 @@ mod tests {
     // Create a response with known values
     let body = Bytes::from("test response body");
     let response = HttpResponseBuilder::new(StatusCode::OK)
-    .insert_header(("Content-Type", "text/plain"))
-    .insert_header(("X-Custom", "test-value"))
-    .body(body);
+      .insert_header(("Content-Type", "text/plain"))
+      .insert_header(("X-Custom", "test-value"))
+      .body(body);
 
     let service_response = ServiceResponse::new(TestRequest::default().to_http_request(), response);
 
@@ -234,22 +234,17 @@ mod tests {
     assert_eq!(&body_bytes[..], b"test response body");
   }
 
-  // #[tokio::test]
-  // async fn test_response_to_bytes_with_empty_body() {
-  //     let response = Response::builder()
-  //         .status(StatusCode::NO_CONTENT)
-  //         .body(Body::empty())
-  //         .unwrap();
+  #[tokio::test]
+  async fn test_response_to_bytes_with_empty_body() {
+    let response = HttpResponseBuilder::new(StatusCode::NO_CONTENT).body(Bytes::new());
+    let service_response = ServiceResponse::new(TestRequest::default().to_http_request(), response);
+    let (_new_res, bytes) = response_to_bytes(service_response).await.unwrap();
+    let reconstructed = bytes_to_response(bytes).unwrap();
 
-  //     let (_new_res, bytes) = response_to_bytes(response).await;
-  //     let reconstructed = bytes_to_response(bytes).unwrap();
-
-  //     assert_eq!(reconstructed.status(), StatusCode::NO_CONTENT);
-  //     let body_bytes = to_bytes(reconstructed.into_body(), usize::MAX)
-  //         .await
-  //         .unwrap();
-  //     assert!(body_bytes.is_empty());
-  // }
+    assert_eq!(reconstructed.status(), StatusCode::NO_CONTENT);
+    let body_bytes = body::to_bytes(reconstructed.into_body()).await.unwrap();
+    assert!(body_bytes.is_empty());
+  }
 
   // #[tokio::test]
   // async fn test_different_status_codes() {
