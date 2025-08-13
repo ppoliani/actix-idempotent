@@ -1,102 +1,90 @@
-// #[cfg(test)]
-// mod tests {
-//   use axum::body::to_bytes;
-//   use axum::{body::Body, extract::Request, routing::get, Router};
-//   use axum_idempotent::{IdempotentLayer, IdempotentOptions};
-//   use fred::clients::Client;
-//   use fred::prelude::ClientLike;
-//   use ruts::store::redis::RedisStore;
-//   use ruts::{CookieOptions, SessionLayer};
-//   use std::sync::atomic::{AtomicU64, Ordering};
-//   use std::sync::Arc;
-//   use std::time::Duration;
-//   use tower::ServiceExt;
-//   use tower_cookies::CookieManagerLayer;
+#[cfg(test)]
+mod tests {
+  use deadpool_redis::{Config, Runtime};
+  use actix_session::storage::RedisSessionStore;
+  use actix_session::SessionMiddleware;
+  use actix_web::cookie::Key;
+  use actix_web::dev::{Service, ServiceResponse};
+  use actix_web::test::TestRequest;
+  use actix_web::web::get;
+  use actix_web::{body, test, App, Error};
+  use actix_http::{Request};
+  use actix_idempotent::{IdempotentFactory, IdempotentOptions};
+  use bytes::Bytes;
+  use std::sync::atomic::{AtomicU64, Ordering};
+  use std::time::Duration;
 
-//   static COUNTER: AtomicU64 = AtomicU64::new(0);
+  static COUNTER: AtomicU64 = AtomicU64::new(0);
 
-//   async fn increment_counter() -> String {
-//     let count = COUNTER.fetch_add(1, Ordering::SeqCst);
-//     format!("Response #{}", count)
-//   }
+  async fn increment_counter() -> String {
+    let count = COUNTER.fetch_add(1, Ordering::SeqCst);
+    format!("Response #{}", count)
+  }
 
-//   async fn setup_redis() -> RedisStore<Client> {
-//     let client = Client::default();
-//     client.init().await.unwrap();
+  async fn create_test_app() -> impl Service<Request, Response = ServiceResponse, Error = Error> {
+    let conn_string = format!("redis://:{}@{}:{}", "password", "127.0.0.1", "6379");
+    let config = Config::from_url(conn_string);
+    let pool = config.create_pool(Some(Runtime::Tokio1)).unwrap();
+    let redis_store = RedisSessionStore::new_pooled(pool).await.unwrap();
 
-//     RedisStore::new(Arc::new(client))
-//   }
+    let idempotent_factory = IdempotentFactory::new(IdempotentOptions::default().expire_after(3));
+    let secret_key = Key::generate();
 
-//   async fn create_test_app() -> Router {
-//     let store = Arc::new(setup_redis().await);
+    let app = test::init_service(
+      App::new()
+        // Add session management to your application using Redis for session state storage
+        .wrap(
+          SessionMiddleware::new(redis_store.clone(), secret_key.clone())
+        )
+        .route("/test", get().to(increment_counter).wrap(idempotent_factory))
+    ).await;
 
-//     // Configure session options
-//     let cookie_options = CookieOptions::build().name("session").max_age(10).path("/");
-//     let session_layer = SessionLayer::new(store.clone()).with_cookie_options(cookie_options);
+    app
+  }
 
-//     let idempotent_options = IdempotentOptions::default().expire_after(3);
-//     let idempotent_layer = IdempotentLayer::<RedisStore<Client>>::new(idempotent_options);
+  #[tokio::test]
+  async fn test_idempotency() {
+    let mut app = create_test_app().await;
 
-//     Router::new()
-//       .route("/test", get(increment_counter))
-//       .layer(idempotent_layer)
-//       .layer(session_layer)
-//       .layer(CookieManagerLayer::new())
-//   }
+    let response1 = TestRequest::get()
+      .uri("/test")
+      .set_payload(Bytes::new())
+      .send_request(&mut app).await;
+    assert!(response1.status().is_success(), "Something went wrong");
 
-//   #[tokio::test]
-//   async fn test_idempotency() {
-//     let app = create_test_app().await;
+    // First request should increment counter
+    // Extract the session cookie from the first response
+    let session_cookie = response1
+      .headers()
+      .get_all("set-cookie")
+      .find(|&cookie| cookie.to_str().unwrap().starts_with("session="))
+      .cloned()
+      .expect("Session cookie not found");
 
-//     // First request should increment counter
-//     let response1 = app
-//       .clone()
-//       .oneshot(Request::builder().uri("/test").body(Body::empty()).unwrap())
-//       .await
-//       .unwrap();
+    let body1 = body::to_bytes(response1.into_body()).await.unwrap();
+    assert_eq!(&body1[..], b"Response #0");
 
-//     // Extract the session cookie from the first response
-//     let session_cookie = response1
-//       .headers()
-//       .get_all("set-cookie")
-//       .iter()
-//       .find(|&cookie| cookie.to_str().unwrap().starts_with("session="))
-//       .cloned()
-//       .expect("Session cookie not found");
+    // Second request should return cached response - include the session cookie
+    let response2 = TestRequest::get()
+      .uri("/test")
+      .insert_header(("cookie", &session_cookie))
+      .set_payload(Bytes::new())
+      .send_request(&mut app).await;
 
-//     let body1 = to_bytes(response1.into_body(), usize::MAX).await.unwrap();
-//     assert_eq!(&body1[..], b"Response #0");
+    let body2 = body::to_bytes(response2.into_body()).await.unwrap();
+    assert_eq!(&body2[..], b"Response #0");
 
-//     // Second request should return cached response - include the session cookie
-//     let response2 = app
-//       .clone()
-//       .oneshot(
-//         Request::builder()
-//           .uri("/test")
-//           .header("cookie", &session_cookie)
-//           .body(Body::empty())
-//           .unwrap(),
-//       )
-//       .await
-//       .unwrap();
-//     let body2 = to_bytes(response2.into_body(), usize::MAX).await.unwrap();
-//     assert_eq!(&body2[..], b"Response #0");
+    // Wait for cache to expire
+    tokio::time::sleep(Duration::from_secs(3)).await;
 
-//     // Wait for cache to expire
-//     tokio::time::sleep(Duration::from_secs(3)).await;
+    // Third request should increment counter again - still include the session cookie
+    let response3 = TestRequest::get()
+      .uri("/test")
+      .insert_header(("cookie", &session_cookie))
+      .set_payload(Bytes::new())
+      .send_request(&mut app).await;
 
-//     // Third request should increment counter again - still include the session cookie
-//     let response3 = app
-//       .oneshot(
-//         Request::builder()
-//           .uri("/test")
-//           .header("cookie", &session_cookie)
-//           .body(Body::empty())
-//           .unwrap(),
-//       )
-//       .await
-//       .unwrap();
-//     let body3 = to_bytes(response3.into_body(), usize::MAX).await.unwrap();
-//     assert_eq!(&body3[..], b"Response #1");
-//   }
-// }
+    let body3 = body::to_bytes(response3.into_body()).await.unwrap();
+    assert_eq!(&body3[..], b"Response #1");
+  }
+}
