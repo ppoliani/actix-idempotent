@@ -117,6 +117,8 @@ where
 
       let (req, hash) = hash_request(req, &config).await;
 
+      println!("entries >>>>>>>>>>>>> {:#?}", session.entries());
+
       match check_cached_response(&hash, &session, req.request().clone()).await {
         Ok(Some(res)) => return Ok(res),
         Ok(None) => {}  // No cached response, continue

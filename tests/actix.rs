@@ -3,7 +3,7 @@ mod tests {
   use deadpool_redis::{Config, Runtime};
   use actix_session::storage::RedisSessionStore;
   use actix_session::SessionMiddleware;
-  use actix_web::cookie::Key;
+  use actix_web::cookie::{Key, SameSite};
   use actix_web::dev::{Service, ServiceResponse};
   use actix_web::test::TestRequest;
   use actix_web::web::get;
@@ -22,7 +22,7 @@ mod tests {
   }
 
   async fn create_test_app() -> impl Service<Request, Response = ServiceResponse, Error = Error> {
-    let conn_string = format!("redis://:{}@{}:{}", "password", "127.0.0.1", "6379");
+    let conn_string = format!("redis://:{}@{}:{}", "Lma5LVU8lMcDRAFwKMLmcUuiIQ+uXaEZIm2eahgr", "127.0.0.1", "6379");
     let config = Config::from_url(conn_string);
     let pool = config.create_pool(Some(Runtime::Tokio1)).unwrap();
     let redis_store = RedisSessionStore::new_pooled(pool).await.unwrap();
@@ -34,7 +34,12 @@ mod tests {
       App::new()
         // Add session management to your application using Redis for session state storage
         .wrap(
-          SessionMiddleware::new(redis_store.clone(), secret_key.clone())
+          SessionMiddleware::builder(redis_store.clone(), secret_key.clone())
+            // allow the cookie to be accessed from javascript
+            .cookie_http_only(false)
+            // allow the cookie only from the current domain
+            .cookie_same_site(SameSite::Strict)
+            .build(),
         )
         .route("/test", get().to(increment_counter).wrap(idempotent_factory))
     ).await;
@@ -57,7 +62,7 @@ mod tests {
     let session_cookie = response1
       .headers()
       .get_all("set-cookie")
-      .find(|&cookie| cookie.to_str().unwrap().starts_with("session="))
+      .find(|&cookie| cookie.to_str().unwrap().starts_with("id="))
       .cloned()
       .expect("Session cookie not found");
 
