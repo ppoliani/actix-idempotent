@@ -266,22 +266,18 @@ mod tests {
     }
   }
 
-  // #[tokio::test]
-  // async fn test_body_bytes_preservation() {
-  //     let original_body = "test response body";
-  //     let response = Response::builder()
-  //         .status(StatusCode::OK)
-  //         .body(Body::from(original_body))
-  //         .unwrap();
+  #[tokio::test]
+  async fn test_body_bytes_preservation() {
+    let original_body = Bytes::from("test response body");
+    let response = HttpResponseBuilder::new(StatusCode::OK).body(original_body.clone());
+    let service_response = ServiceResponse::new(TestRequest::default().to_http_request(), response);
 
-  //     let (_, bytes) = response_to_bytes(response).await;
-  //     let reconstructed = bytes_to_response(bytes).unwrap();
+    let (_, bytes) = response_to_bytes(service_response).await.unwrap();
+    let reconstructed = bytes_to_response(bytes).unwrap();
 
-  //     let body_bytes = to_bytes(reconstructed.into_body(), usize::MAX)
-  //         .await
-  //         .unwrap();
-  //     assert_eq!(&body_bytes[..], original_body.as_bytes());
-  // }
+    let body_bytes = body::to_bytes(reconstructed.into_body()).await.unwrap();
+    assert_eq!(&body_bytes[..], original_body.to_vec());
+  }
 
   // #[tokio::test]
   // async fn test_header_serialization_format() {
