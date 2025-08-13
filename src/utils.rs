@@ -246,27 +246,25 @@ mod tests {
     assert!(body_bytes.is_empty());
   }
 
-  // #[tokio::test]
-  // async fn test_different_status_codes() {
-  //     for status in [
-  //         StatusCode::OK,
-  //         StatusCode::CREATED,
-  //         StatusCode::ACCEPTED,
-  //         StatusCode::NO_CONTENT,
-  //         StatusCode::BAD_REQUEST,
-  //         StatusCode::NOT_FOUND,
-  //         StatusCode::INTERNAL_SERVER_ERROR,
-  //     ] {
-  //         let response = Response::builder()
-  //             .status(status)
-  //             .body(Body::empty())
-  //             .unwrap();
+  #[tokio::test]
+  async fn test_different_status_codes() {
+    for status in [
+      StatusCode::OK,
+      StatusCode::CREATED,
+      StatusCode::ACCEPTED,
+      StatusCode::NO_CONTENT,
+      StatusCode::BAD_REQUEST,
+      StatusCode::NOT_FOUND,
+      StatusCode::INTERNAL_SERVER_ERROR,
+    ] {
+      let response = HttpResponseBuilder::new(status).body(Bytes::new());
+      let service_response = ServiceResponse::new(TestRequest::default().to_http_request(), response);
 
-  //         let (_, bytes) = response_to_bytes(response).await;
-  //         let reconstructed = bytes_to_response(bytes).unwrap();
-  //         assert_eq!(reconstructed.status(), status);
-  //     }
-  // }
+      let (_, bytes) = response_to_bytes(service_response).await.unwrap();
+      let reconstructed = bytes_to_response(bytes).unwrap();
+      assert_eq!(reconstructed.status(), status);
+    }
+  }
 
   // #[tokio::test]
   // async fn test_body_bytes_preservation() {
