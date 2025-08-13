@@ -1,76 +1,95 @@
 use crate::config::IdempotentOptions;
-use axum::body::{to_bytes, Body};
-use axum::extract::Request;
-use axum::http::{HeaderMap, HeaderName, StatusCode};
-use axum::response::Response;
 use std::error::Error;
-use std::str::FromStr;
+use actix_web::body::{self, to_bytes, BoxBody, MessageBody};
+use actix_web::dev::{Payload, ServiceRequest, ServiceResponse};
+use actix_web::error::PayloadError;
+use actix_web::test::read_body;
+use actix_web::HttpResponseBuilder;
 use blake3::Hasher;
+use bytes::{Bytes, BytesMut};
+use tokio_stream::StreamExt;
 
-pub(crate) async fn hash_request(req: Request, options: &IdempotentOptions) -> (Request, String) {
-    let mut hasher = Hasher::new();
-    hasher.update(req.method().as_str().as_bytes());
-    hasher.update(req.uri().path().as_bytes());
+pub(crate) async fn hash_request(req: ServiceRequest, options: &IdempotentOptions) -> (ServiceRequest, String) {
+  let mut hasher = Hasher::new();
+  hasher.update(req.method().as_str().as_bytes());
+  hasher.update(req.uri().path().as_bytes());
 
-    if !options.ignore_all_headers {
-        // Collect and sort headers for consistent ordering
-        let mut headers: Vec<_> = req
-            .headers()
-            .iter()
-            .filter(|(name, value)| {
-                if options.ignored_headers.contains(*name) {
-                    return false;
-                }
-                if let Some(ignored_value) = options.ignored_header_values.get(name.to_owned()) {
-                    return value != ignored_value;
-                }
-                true
-            })
-            .collect();
-
-        headers.sort_by(|(a_name, _), (b_name, _)| a_name.as_str().cmp(b_name.as_str()));
-
-        for (name, value) in headers {
-            hasher.update(name.as_str().as_bytes());
-            hasher.update(value.as_bytes());
+  if !options.ignore_all_headers {
+    // Collect and sort headers for consistent ordering
+    let mut headers: Vec<_> = req
+      .headers()
+      .iter()
+      .filter(|(name, value)| {
+        if options.ignored_headers.contains(*name) {
+          return false;
         }
+        if let Some(ignored_value) = options.ignored_header_values.get(name.to_owned()) {
+          return value != ignored_value;
+        }
+        true
+      })
+      .collect();
+
+    headers.sort_by(|(a_name, _), (b_name, _)| a_name.as_str().cmp(b_name.as_str()));
+
+    for (name, value) in headers {
+      hasher.update(name.as_str().as_bytes());
+      hasher.update(value.as_bytes());
     }
+  }
 
-    let (parts, body) = req.into_parts();
-    let body_bytes = to_bytes(body, usize::MAX).await.unwrap();
-    hasher.update(&body_bytes);
+  let (parts, body) = req.into_parts();
+  let body_bytes = read_req_body(&mut body).await.unwrap();
+  hasher.update(&body_bytes);
 
-    let req = Request::from_parts(parts, Body::from(body_bytes));
-    (req, hasher.finalize().to_string())
+  let req = ServiceRequest::from_parts(parts, Payload::from(Bytes::from(body_bytes)));
+  (req, hasher.finalize().to_string())
+}
+
+async fn read_req_body(payload: &mut Payload) -> Result<Bytes, PayloadError> {
+  let mut body = BytesMut::new();
+  while let Some(chunk) = payload.next().await {
+    let chunk = chunk?;
+    body.extend_from_slice(&chunk);
+  }
+
+  Ok(body.into())
 }
 
 /// Serialize
-pub(crate) async fn response_to_bytes(res: Response<Body>) -> (Response, Vec<u8>) {
-    let (parts, body) = res.into_parts();
+pub(crate) async fn response_to_bytes(res: ServiceResponse) -> Result<(ServiceResponse, Vec<u8>), Box<dyn std::error::Error>> {
+  let mut result = Vec::new();
+  let status = res.status();
+  result.extend_from_slice(&status.as_u16().to_be_bytes());
 
-    let body_bytes = to_bytes(body, usize::MAX).await.unwrap();
+  let headers = res.headers().clone();
+  let len = headers.len();
+  for (i, (name, value)) in headers.iter().enumerate() {
+    result.extend_from_slice(name.as_str().as_bytes());
+    result.extend_from_slice(b": ");
+    result.extend_from_slice(value.as_bytes());
 
-    let mut result = Vec::new();
-    // Serialize status code
-    result.extend_from_slice(&parts.status.as_u16().to_be_bytes());
-
-    let headers = parts.headers.clone();
-    let len = headers.len();
-    for (i, (name, value)) in headers.iter().enumerate() {
-        result.extend_from_slice(name.as_str().as_bytes());
-        result.extend_from_slice(b": ");
-        result.extend_from_slice(value.as_bytes());
-
-        if i < len - 1 {
-            result.extend_from_slice(b"\r\n");
-        }
+    if i < len - 1 {
+      result.extend_from_slice(b"\r\n");
     }
+  }
 
-    // headers/body separator (double CRLF)
-    result.extend_from_slice(b"\r\n\r\n");
-    result.extend_from_slice(&body_bytes);
+  // headers/body separator (double CRLF)
+  result.extend_from_slice(b"\r\n\r\n");
 
-    (Response::from_parts(parts, Body::from(body_bytes)), result)
+  let req = res.request().clone();
+  let body = body::to_bytes(res.into_body()).await?;
+  result.extend_from_slice(&body);
+
+  let mut res_builder = HttpResponseBuilder::new(status);
+
+  for h in headers {
+    res_builder.insert_header(h);
+  }
+
+  res_builder.body(body);
+
+  Ok((ServiceResponse::new(req, res_builder.finish()), result))
 }
 
 /// Deserialize bytes back into a `axum::response::Response`.

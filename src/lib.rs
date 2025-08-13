@@ -73,13 +73,11 @@ use actix_web::{
   dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform}, Error
 };
 use std::{
-  future::{Future, ready, Ready as StdReady},
-  rc::Rc, marker::PhantomData, pin::Pin,
-  task::{Context, Poll}, error::Error as StdError,
+  future::{ready, Ready as StdReady},
+  rc::Rc, error::Error as StdError,
 };
-use actix_session::{storage::{RedisSessionStore, SessionStore}, Session, SessionMiddleware};
-// use std::error::Error;
-use futures_util::future::{LocalBoxFuture, ok, err, Ready};
+use actix_session::Session;
+use futures_util::future::LocalBoxFuture;
 
 mod utils;
 
@@ -93,11 +91,11 @@ pub struct IdempotentMiddleware<S> {
   config: IdempotentOptions,
 }
 
-impl<S, B> Service<ServiceRequest> for IdempotentMiddleware<S>
+impl<S> Service<ServiceRequest> for IdempotentMiddleware<S>
 where
-  S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error> + 'static,
+  S: Service<ServiceRequest, Response = ServiceResponse, Error = Error> + 'static,
 {
-  type Response = ServiceResponse<B>;
+  type Response = ServiceResponse;
   type Error = Error;
   type Future = LocalBoxFuture<'static, Result<Self::Response, Self::Error>>;
 
@@ -131,10 +129,7 @@ where
       let res = srv.call(req).await?;
       let (res, response_bytes) = response_to_bytes(res).await;
 
-      if let Err(err) = session
-        .insert(&hash, &response_bytes, Some(config.expire_after_seconds))
-        .await
-      {
+      if let Err(err) = session.insert(&hash, &response_bytes){
         tracing::error!("Failed to cache idempotent response: {:?}", err);
         // Continue without caching
       }
